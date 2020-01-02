@@ -32,7 +32,7 @@ import re
 import sys
 import hashlib
 import subprocess
-import qrencode
+import qrcode
 from tempfile import mkstemp
 from datetime import datetime
 from PIL import Image
@@ -57,9 +57,7 @@ paperformat_str = "A4"
 
 
 def create_barcode(chunkdata):
-    version, size, im = qrencode.encode(chunkdata,
-                                        level=qrencode.QR_ECLEVEL_H,
-                                        case_sensitive=True)
+    im = qrcode.make(chunkdata)
     return im
 
 
@@ -78,7 +76,7 @@ if not os.path.isfile(input_path):
     raise RuntimeError('File {} not found'.format(input_path))
 just_filename = os.path.basename(input_path)
 
-with open(input_path) as inputfile:
+with open(input_path, encoding='UTF-8') as inputfile:
     ascdata = inputfile.read()
 
 # only allow some harmless characters
@@ -136,11 +134,18 @@ finish_page(pdf, c, pgno)
 pgno += 1
 
 fd, temp_barcode_path = mkstemp('.pdf', 'qr_', '.')
+
 # will use pdf as the tmpfile has a .pdf suffix
 pdf.writetofile(temp_barcode_path)
+os.close(fd)
 
 # prepare plain text output
 fd, temp_text_path = mkstemp('.ps', 'text_', '.')
+os.close(fd)
+
+fd, temp_text_path_input = mkstemp('.ps', 'text_', '.')
+os.close(fd)
+
 input_file_modification = datetime.fromtimestamp(os.path.getmtime(input_path)).strftime("%Y-%m-%d %H:%M:%S")
 
 # split lines on plaintext_maxlinechars - ( checksum_size + separator size)
@@ -190,38 +195,37 @@ outlines.append("--")
 outlines.append("Created with paperbackup.py")
 outlines.append("See https://github.com/intra2net/paperbackup/ for instructions")
 
+# send the text to enscript
+with open(temp_text_path_input, 'w', encoding='UTF-8') as inputfile:
+    for line in outlines:
+        inputfile.write(line)
+        inputfile.write(os.linesep)
+
 # use "enscript" to create postscript with the plaintext
 p = subprocess.Popen(
         ["enscript", "-p"+temp_text_path, "-f", "Courier12",
             "-M" + paperformat_str, "--header",
-            just_filename + "|" + input_file_modification + "|Page $%"],
-        stdout=subprocess.PIPE, stdin=subprocess.PIPE)
-
-# send the text to enscript
-for line in outlines:
-    p.stdin.write(line.encode('utf-8'))
-    p.stdin.write(os.linesep.encode('utf-8'))
-
-p.communicate()[0]
-p.stdin.close()
+            just_filename + "|" + input_file_modification + "|Page $%",
+            temp_text_path_input
+            ])
 
 if p.returncode != 0:
-    raise RuntimeError('error calling enscript')
+    print("error calling enscript")
 
 # combine both files with ghostscript
 
-ret = subprocess.call(["gs", "-dBATCH", "-dNOPAUSE", "-q", "-sDEVICE=pdfwrite",
-                       "-sOutputFile=" + just_filename + ".pdf",
-                       temp_barcode_path, temp_text_path])
-if ret != 0:
-    raise RuntimeError('error calling ghostscript')
+#ret = subprocess.call(["gs", "-dBATCH", "-dNOPAUSE", "-q", "-sDEVICE=pdfwrite",
+#                       "-sOutputFile=" + just_filename + ".pdf",
+#                       temp_barcode_path, temp_text_path])
+#if ret != 0:
+#    raise RuntimeError('error calling ghostscript')
 
 # using enscript and ghostscript to create the plaintext output is a hack,
 # using PyX and LaTeX would be more elegant. But I could not find an easy
 # solution to flow the text over several pages with PyX.
 
-os.remove(temp_text_path)
-os.remove(temp_barcode_path)
+#os.remove(temp_text_path)
+#os.remove(temp_barcode_path)
 
 print("Please now verify that the output can be restored by calling:")
 print("paperbackup-verify.sh {}.pdf".format(just_filename))
